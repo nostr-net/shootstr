@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shootstr - Unfollow in Style</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Courier New', monospace;
+            background: #000;
+            color: #0f0;
+            overflow: hidden;
+        }
+
+        #gameCanvas {
+            width: 100%;
+            height: 100vh;
+            display: block;
+            outline: none;
+            cursor: crosshair;
+            image-rendering: pixelated;
+            image-rendering: -moz-crisp-edges;
+            image-rendering: crisp-edges;
+        }
+
+        #loadingScreen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: #000;
+            z-index: 1000;
+        }
+
+        #loadingScreen.hidden {
+            display: none;
+        }
+
+        .title {
+            font-size: 3em;
+            margin-bottom: 20px;
+            text-shadow: 0 0 10px #0f0;
+        }
+
+        .subtitle {
+            font-size: 1.2em;
+            margin-bottom: 40px;
+            opacity: 0.8;
+        }
+
+        .status {
+            font-size: 1em;
+            margin: 10px 0;
+        }
+
+        #npubInput {
+            background: #000;
+            border: 2px solid #0f0;
+            color: #0f0;
+            padding: 10px 20px;
+            font-family: 'Courier New', monospace;
+            font-size: 1em;
+            margin: 20px 0;
+            width: 500px;
+            max-width: 90%;
+        }
+
+        #startButton {
+            background: #0f0;
+            color: #000;
+            border: none;
+            padding: 15px 40px;
+            font-family: 'Courier New', monospace;
+            font-size: 1.2em;
+            cursor: pointer;
+            margin-top: 20px;
+            font-weight: bold;
+            transition: all 0.3s;
+        }
+
+        #startButton:hover {
+            background: #0a0;
+            transform: scale(1.05);
+        }
+
+        #startButton:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+
+        #extensionButton {
+            background: #000;
+            color: #0f0;
+            border: 2px solid #0f0;
+            padding: 15px 40px;
+            font-family: 'Courier New', monospace;
+            font-size: 1.2em;
+            cursor: pointer;
+            margin-top: 10px;
+            font-weight: bold;
+            transition: all 0.3s;
+        }
+
+        #extensionButton:hover {
+            background: #0f0;
+            color: #000;
+        }
+
+        #extensionButton:disabled {
+            background: #000;
+            border-color: #555;
+            color: #555;
+            cursor: not-allowed;
+        }
+
+        .separator {
+            margin: 20px 0;
+            color: #0f0;
+            opacity: 0.5;
+        }
+
+        #hud {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #0f0;
+            font-size: 1.2em;
+            z-index: 100;
+            text-shadow: 2px 2px 4px #000;
+            pointer-events: none;
+        }
+
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 20px;
+            height: 20px;
+            z-index: 100;
+            pointer-events: none;
+        }
+
+        #crosshair::before,
+        #crosshair::after {
+            content: '';
+            position: absolute;
+            background: #f00;
+        }
+
+        #crosshair::before {
+            top: 50%;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            transform: translateY(-50%);
+        }
+
+        #crosshair::after {
+            left: 50%;
+            top: 0;
+            width: 2px;
+            height: 100%;
+            transform: translateX(-50%);
+        }
+
+        .instructions {
+            margin-top: 30px;
+            font-size: 0.9em;
+            opacity: 0.7;
+            max-width: 600px;
+            text-align: center;
+        }
+
+        .instructions p {
+            margin: 5px 0;
+        }
+
+        #minimap {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            width: 200px;
+            height: 200px;
+            border: 2px solid #0f0;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 100;
+            image-rendering: pixelated;
+            image-rendering: -moz-crisp-edges;
+            image-rendering: crisp-edges;
+        }
+
+        #cleanupScreen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: none;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: rgba(0, 0, 0, 0.95);
+            z-index: 500;
+        }
+
+        #cleanupScreen.active {
+            display: flex;
+        }
+
+        .cleanup-title {
+            font-size: 2.5em;
+            margin-bottom: 30px;
+            text-shadow: 0 0 20px #f00;
+            color: #f00;
+        }
+
+        .cleanup-list {
+            max-height: 300px;
+            overflow-y: auto;
+            margin-bottom: 40px;
+            padding: 20px;
+            border: 2px solid #f00;
+            background: rgba(0, 0, 0, 0.8);
+            width: 600px;
+            max-width: 90%;
+        }
+
+        .cleanup-list-item {
+            padding: 8px 0;
+            border-bottom: 1px solid #333;
+            color: #f00;
+        }
+
+        .cleanup-list-item:last-child {
+            border-bottom: none;
+        }
+
+        .cleanup-instructions {
+            font-size: 1.5em;
+            margin-bottom: 60px;
+            color: #0f0;
+            text-shadow: 0 0 10px #0f0;
+        }
+
+        .cleanup-targets {
+            position: relative;
+            width: 80%;
+            max-width: 800px;
+            height: 200px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .target {
+            width: 150px;
+            height: 150px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2em;
+            font-weight: bold;
+            cursor: crosshair;
+            transition: all 0.2s;
+            text-align: center;
+            padding: 20px;
+            line-height: 1.3;
+        }
+
+        .target.confirm {
+            border: 5px solid #0f0;
+            color: #0f0;
+            background: rgba(0, 255, 0, 0.1);
+        }
+
+        .target.confirm:hover {
+            background: rgba(0, 255, 0, 0.3);
+            transform: scale(1.1);
+        }
+
+        .target.cancel {
+            border: 5px solid #ff0;
+            color: #ff0;
+            background: rgba(255, 255, 0, 0.1);
+        }
+
+        .target.cancel:hover {
+            background: rgba(255, 255, 0, 0.3);
+            transform: scale(1.1);
+        }
+
+        .no-kills-message {
+            font-size: 1.5em;
+            color: #0f0;
+            margin-bottom: 40px;
+        }
+
+        .cleanup-back-button {
+            background: #0f0;
+            color: #000;
+            border: none;
+            padding: 15px 40px;
+            font-family: 'Courier New', monospace;
+            font-size: 1.2em;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.3s;
+        }
+
+        .cleanup-back-button:hover {
+            background: #0a0;
+            transform: scale(1.05);
+        }
+
+        /* Level Selection Screen Styles */
+        #levelSelectScreen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: none;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: #000;
+            z-index: 1000;
+        }
+
+        #levelSelectScreen.active {
+            display: flex;
+        }
+
+        .level-title {
+            font-size: 3em;
+            margin-bottom: 20px;
+            text-shadow: 0 0 10px #0f0;
+        }
+
+        .level-subtitle {
+            font-size: 1.2em;
+            margin-bottom: 40px;
+            opacity: 0.8;
+        }
+
+        .level-cards {
+            display: flex;
+            gap: 30px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+            justify-content: center;
+            max-width: 1200px;
+        }
+
+        .level-card {
+            background: #000;
+            border: 3px solid #0f0;
+            padding: 30px;
+            width: 300px;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-align: center;
+        }
+
+        .level-card:hover {
+            background: rgba(0, 255, 0, 0.1);
+            transform: scale(1.05);
+            box-shadow: 0 0 20px #0f0;
+        }
+
+        .level-card-title {
+            font-size: 1.8em;
+            margin-bottom: 15px;
+            color: #0f0;
+            text-shadow: 0 0 10px #0f0;
+        }
+
+        .level-card-description {
+            font-size: 1em;
+            opacity: 0.8;
+            line-height: 1.5;
+        }
+
+        .level-card-count {
+            font-size: 1.2em;
+            margin-top: 15px;
+            color: #ff0;
+            font-weight: bold;
+        }
+
+        #loadingDataScreen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: none;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: #000;
+            z-index: 1000;
+        }
+
+        #loadingDataScreen.active {
+            display: flex;
+        }
+
+        .loading-spinner {
+            font-size: 4em;
+            animation: spin 2s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+    </style>
+</head>
+<body>
+    <div id="loadingScreen">
+        <div class="title">🎮 SHOOTSTR 🎮</div>
+        <div class="subtitle">Unfollow in style</div>
+
+        <button id="extensionButton">LOGIN WITH EXTENSION</button>
+
+        <div class="separator">- OR -</div>
+
+        <input
+            type="text"
+            id="npubInput"
+            placeholder="Enter your npub or hex pubkey (read-only mode)"
+            autocomplete="off"
+        />
+
+        <button id="startButton">START GAME (READ-ONLY)</button>
+
+        <div class="status" id="statusText">Login with extension to sign unfollow events, or enter npub for read-only mode</div>
+
+        <div class="instructions">
+            <p><strong>CONTROLS:</strong></p>
+            <p>W/S or Arrow Up/Down - Move Forward/Backward</p>
+            <p>A/D - Strafe Left/Right</p>
+            <p>Arrow Left/Right or Mouse - Turn</p>
+            <p>Left Click - Shoot (UNFOLLOW)</p>
+            <p>ESC - Unlock cursor</p>
+            <p><strong>Classic Wolfenstein 3D Style!</strong></p>
+        </div>
+    </div>
+
+    <div id="crosshair"></div>
+
+    <div id="hud">
+        <div>Followers Remaining: <span id="followerCount">0</span></div>
+        <div>Unfollowed: <span id="unfollowCount">0</span></div>
+        <div id="waveInfo" style="display:none"></div>
+    </div>
+
+    <canvas id="minimap"></canvas>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="cleanupScreen">
+        <div class="cleanup-title">🚪 EXIT CLEANUP 🚪</div>
+        <div id="cleanupContent"></div>
+    </div>
+
+    <div id="levelSelectScreen">
+        <div class="level-title">SELECT YOUR LEVEL</div>
+        <div class="level-subtitle">Choose your hunting ground</div>
+
+        <div class="level-cards">
+            <div class="level-card" data-level="zombie">
+                <div class="level-card-title">ZOMBIE SLAUGHTER</div>
+                <div class="level-card-description">
+                    Hunt the undead - profiles that haven't posted in over 6 months
+                </div>
+                <div class="level-card-count" id="zombieCount">Loading...</div>
+            </div>
+
+            <div class="level-card" data-level="neighborhood">
+                <div class="level-card-title">NEIGHBORHOOD WATCH</div>
+                <div class="level-card-description">
+                    Going stale - last posted 1 to 6 months ago
+                </div>
+                <div class="level-card-count" id="neighborhoodCount">Loading...</div>
+            </div>
+
+            <div class="level-card" data-level="friends">
+                <div class="level-card-title">KILL YOUR FRIENDS</div>
+                <div class="level-card-description">
+                    No mercy - active profiles that posted within the last month
+                </div>
+                <div class="level-card-count" id="friendsCount">Loading...</div>
+            </div>
+        </div>
+
+        <div class="status" id="levelStatus">Loading follower data...</div>
+    </div>
+
+    <div id="loadingDataScreen">
+        <div class="loading-spinner">⏳</div>
+        <div class="level-title">LOADING LEVEL...</div>
+        <div class="status" id="loadingDataStatus">Preparing your enemies...</div>
+    </div>
+
+    <footer style="position:fixed;bottom:0;left:0;right:0;text-align:center;padding:6px;font-family:'Courier New',monospace;font-size:11px;color:#0a0;background:rgba(0,0,0,0.7);z-index:9999;">
+        Part of <a href="https://nostr.net" target="_blank" rel="noopener" style="color:#0f0;">nostr.net</a>
+        &mdash; built by <a href="https://njump.me/npub1aljazgxlpnpfp7n5sunlk3dvfp72456x6nezjw4sd850q879rxqsthg9jp" target="_blank" rel="noopener" style="color:#0f0;">aljaz</a>
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
