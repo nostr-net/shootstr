@@ -124,6 +124,25 @@ export async function smartQuery(
   });
 }
 
+export function groupByRelaySet(
+  pubkeys: string[],
+  outboxCache: Map<string, string[]>,
+  defaultRelays: string[],
+): Map<string, { relays: string[]; pubkeys: string[] }> {
+  const groups = new Map<string, { relays: string[]; pubkeys: string[] }>();
+  for (const pk of pubkeys) {
+    const relays = outboxCache.get(pk) ?? defaultRelays;
+    const key = [...relays].sort().join(',');
+    const existing = groups.get(key);
+    if (existing) {
+      existing.pubkeys.push(pk);
+    } else {
+      groups.set(key, { relays: [...relays].sort(), pubkeys: [pk] });
+    }
+  }
+  return groups;
+}
+
 // NIP-07 window.nostr interface
 declare global {
   interface Window {
@@ -546,42 +565,20 @@ export class NostrService {
       `🔍 AGGRESSIVE LAST POST RETRY: checking ${pubkeys.length} unresolved pubkeys`,
     );
 
-    await runConcurrent(
-      pubkeys,
-      async (pubkey) => {
-        const defaultRelayEvents = await this.queryLastPostEvents(
-          ACTIVITY_RELAYS,
-          [pubkey],
-          AGGRESSIVE_ACTIVITY_KINDS,
-          undefined,
-          500,
-          15000,
-          `Aggressive retry default relays for ${pubkey.substring(0, 8)}...`,
+    // Group by relay set and batch (same approach as phase 2)
+    const groups = groupByRelaySet(pubkeys, this.outboxRelayCache, ACTIVITY_RELAYS);
+    const groupEntries = Array.from(groups.values());
+
+    await runConcurrent(groupEntries, async ({ relays, pubkeys: pks }) => {
+      for (let i = 0; i < pks.length; i += 10) {
+        const subBatch = pks.slice(i, i + 10);
+        const events = await this.queryLastPostEvents(
+          relays, subBatch, AGGRESSIVE_ACTIVITY_KINDS, undefined, 500, 12000,
+          `Aggressive retry batch (${subBatch.length})`,
         );
-        this.mergeLastPostEvents(lastPostMap, defaultRelayEvents);
-
-        if (lastPostMap.has(pubkey)) {
-          return;
-        }
-
-        if (!this.relayLists.has(pubkey) && !this.outboxRelayCache.has(pubkey)) {
-          return;
-        }
-
-        const outboxRelays = this.getOutboxRelays(pubkey);
-        const outboxEvents = await this.queryLastPostEvents(
-          outboxRelays,
-          [pubkey],
-          AGGRESSIVE_ACTIVITY_KINDS,
-          undefined,
-          500,
-          12000,
-          `Aggressive retry outbox relays for ${pubkey.substring(0, 8)}...`,
-        );
-        this.mergeLastPostEvents(lastPostMap, outboxEvents);
-      },
-      4,
-    );
+        this.mergeLastPostEvents(lastPostMap, events);
+      }
+    }, 4);
   }
 
   private async broadFallbackLastPostRetry(
