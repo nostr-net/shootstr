@@ -4,9 +4,13 @@ export default defineConfig({
   server: {
     port: 3000,
   },
-  base: '/', // Serve from root for nginx reverse proxy
+  base: '/',
   build: {
     outDir: 'dist'
   },
-  publicDir: 'public' // Copy .nojekyll and other public files
+  publicDir: 'public',
+  test: {
+    environment: 'jsdom',
+    globals: true,
+  },
 })
