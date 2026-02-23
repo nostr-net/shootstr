@@ -461,7 +461,7 @@ export class NostrService {
    *    (catches users who post to relays outside our default list)
    * 3. Aggressive per-user retry with broad kinds for stubborn misses.
    */
-  async fetchLastPostTimes(pubkeys: string[]): Promise<Map<string, number>> {
+  async fetchLastPostTimes(pubkeys: string[], sinceHints?: Map<string, number>): Promise<Map<string, number>> {
     const uniquePubkeys = Array.from(new Set(pubkeys));
     const lastPostMap = new Map<string, number>();
     if (uniquePubkeys.length === 0) {
@@ -557,7 +557,7 @@ export class NostrService {
           `out of ${stillMissingAfterAggressive.length} unresolved users`,
         );
       }
-      await this.broadFallbackLastPostRetry(broadRetryTargets, lastPostMap);
+      await this.broadFallbackLastPostRetry(broadRetryTargets, lastPostMap, sinceHints);
     }
 
     const stillMissingAfterBroad = uniquePubkeys.filter(pk => !lastPostMap.has(pk));
@@ -565,7 +565,7 @@ export class NostrService {
       stillMissingAfterBroad.length > 0 &&
       stillMissingAfterBroad.length <= MAX_AGGRESSIVE_RETRY_FOLLOWERS
     ) {
-      await this.fallbackUnresolvedLastPostRetry(stillMissingAfterBroad, lastPostMap);
+      await this.fallbackUnresolvedLastPostRetry(stillMissingAfterBroad, lastPostMap, sinceHints);
     }
 
     console.log(
@@ -605,6 +605,7 @@ export class NostrService {
   private async broadFallbackLastPostRetry(
     pubkeys: string[],
     lastPostMap: Map<string, number>,
+    sinceHints?: Map<string, number>,
   ): Promise<void> {
     const dedupedPubkeys = Array.from(new Set(pubkeys));
     if (dedupedPubkeys.length === 0) {
@@ -624,11 +625,22 @@ export class NostrService {
     await runConcurrent(
       batches,
       async (batch) => {
+        // Use the minimum sinceHint across the batch, if all pubkeys have one.
+        // If any pubkey lacks a hint, fall back to undefined (no time bound).
+        const batchSince = sinceHints
+          ? batch.reduce<number | undefined>((min, pk) => {
+              const hint = sinceHints.get(pk);
+              if (hint === undefined) return undefined;
+              if (min === undefined) return hint;
+              return Math.min(min, hint);
+            }, 0) || undefined
+          : undefined;
+
         const events = await this.queryLastPostEvents(
           ACTIVITY_RELAYS,
           batch,
           undefined,
-          undefined,
+          batchSince,
           12,
           12000,
           `Broad reliable retry batch (${batch.length})`,
@@ -646,6 +658,7 @@ export class NostrService {
   private async fallbackUnresolvedLastPostRetry(
     pubkeys: string[],
     lastPostMap: Map<string, number>,
+    sinceHints?: Map<string, number>,
   ): Promise<void> {
     if (pubkeys.length === 0) {
       return;
@@ -658,11 +671,12 @@ export class NostrService {
     await runConcurrent(
       pubkeys,
       async (pubkey) => {
+        const since = sinceHints?.get(pubkey);
         const defaultRelayEvents = await this.queryLastPostEvents(
           RELAYS,
           [pubkey],
           undefined,
-          undefined,
+          since,
           1000,
           20000,
           `Fallback default relays for ${pubkey.substring(0, 8)}...`,
@@ -893,7 +907,17 @@ export class NostrService {
     now: number
   ): Promise<void> {
     const dedupedPubkeys = Array.from(new Set(stalePubkeys));
-    const lastPostMap = await this.fetchLastPostTimes(dedupedPubkeys);
+
+    // Build since hints from cached last-post times
+    const sinceHints = new Map<string, number>();
+    for (const pk of dedupedPubkeys) {
+      const entry = cachedByPubkey.get(pk);
+      if (entry?.lastPostTime && entry.lastPostTime > 0) {
+        sinceHints.set(pk, entry.lastPostTime);
+      }
+    }
+
+    const lastPostMap = await this.fetchLastPostTimes(dedupedPubkeys, sinceHints);
 
     const refreshedEntries = new Map<string, ProfileCacheEntry>();
     for (const pk of dedupedPubkeys) {
