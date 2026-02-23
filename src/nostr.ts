@@ -311,24 +311,49 @@ export class NostrService {
 
   /**
    * Fetch NIP-65 relay lists (kind 10002) for multiple pubkeys.
+   * Checks persistent cache first; only fetches from relays for cache misses.
    * Populates this.relayLists so fetchLastPostTimes can query per-user relays.
    */
   async fetchRelayLists(pubkeys: string[]): Promise<void> {
-    console.log(`Fetching NIP-65 relay lists for ${pubkeys.length} pubkeys`);
+    // 1. Check persistent cache first
+    const cacheKeys = pubkeys.map(pk => CacheKeys.relayList(pk));
+    const cached = await cache.getMany<RelayList>(cacheKeys);
+
+    // Populate in-memory maps from cache hits
+    for (const [key, rl] of cached) {
+      const pk = key.replace('relay-list:', '');
+      this.relayLists.set(pk, rl);
+      const outbox = Array.from(
+        new Set([...rl.writeRelays, ...rl.bothRelays, ...rl.readRelays]),
+      ).sort();
+      this.outboxRelayCache.set(pk, outbox);
+    }
+
+    // 2. Fetch only cache misses
+    const missingPubkeys = pubkeys.filter(pk => !this.relayLists.has(pk));
+    if (missingPubkeys.length === 0) {
+      console.log(`Relay lists: ${cached.size}/${pubkeys.length} from cache`);
+      return;
+    }
+
+    console.log(`Fetching NIP-65 relay lists for ${missingPubkeys.length} pubkeys (${cached.size} from cache)`);
 
     const batchSize = 50;
     const batches: string[][] = [];
-    for (let i = 0; i < pubkeys.length; i += batchSize) {
-      batches.push(pubkeys.slice(i, i + batchSize));
+    for (let i = 0; i < missingPubkeys.length; i += batchSize) {
+      batches.push(missingPubkeys.slice(i, i + batchSize));
     }
 
-    await runConcurrent(batches, async (batch) => {
-      const events = await this.pool.querySync(ACTIVITY_RELAYS, {
-        kinds: [10002],
-        authors: batch
-      });
+    const newEntries = new Map<string, RelayList>();
 
-      // Keep most recent per pubkey
+    await runConcurrent(batches, async (batch) => {
+      const events = await smartQuery(
+        this.pool,
+        ACTIVITY_RELAYS,
+        { kinds: [10002], authors: batch },
+        { timeoutMs: 12000, deadRelays: this.deadRelays },
+      );
+
       const latestByPubkey = new Map<string, Event>();
       for (const event of events) {
         const existing = latestByPubkey.get(event.pubkey);
@@ -337,32 +362,28 @@ export class NostrService {
         }
       }
 
-      for (const [pubkey, event] of latestByPubkey) {
-        const relayList: RelayList = { writeRelays: [], readRelays: [], bothRelays: [] };
+      for (const [pk, event] of latestByPubkey) {
+        const rl: RelayList = { writeRelays: [], readRelays: [], bothRelays: [] };
         for (const tag of event.tags) {
           if (tag[0] === 'r' && tag[1]) {
             const url = tag[1];
             const perm = tag[2];
-            if (perm === 'read') {
-              relayList.readRelays.push(url);
-            } else if (perm === 'write') {
-              relayList.writeRelays.push(url);
-            } else {
-              relayList.bothRelays.push(url);
-            }
+            if (perm === 'read') rl.readRelays.push(url);
+            else if (perm === 'write') rl.writeRelays.push(url);
+            else rl.bothRelays.push(url);
           }
         }
-        this.relayLists.set(pubkey, relayList);
-        const outboxRelays = Array.from(
-          new Set([
-            ...relayList.writeRelays,
-            ...relayList.bothRelays,
-            ...relayList.readRelays,
-          ]),
-        ).sort();
-        this.outboxRelayCache.set(pubkey, outboxRelays);
+        this.relayLists.set(pk, rl);
+        const outbox = Array.from(new Set([...rl.writeRelays, ...rl.bothRelays, ...rl.readRelays])).sort();
+        this.outboxRelayCache.set(pk, outbox);
+        newEntries.set(CacheKeys.relayList(pk), rl);
       }
     }, 5);
+
+    // 3. Persist new relay lists to cache (24h TTL)
+    if (newEntries.size > 0) {
+      await cache.setMany(newEntries, 86400000);
+    }
 
     console.log(`Got relay lists for ${this.relayLists.size}/${pubkeys.length} pubkeys`);
   }

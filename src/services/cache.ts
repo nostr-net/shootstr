@@ -290,6 +290,9 @@ export const CacheKeys = {
   // Profile metadata
   profile: (pubkey: string) => `profile:${pubkey}`,
 
+  // NIP-65 relay list per pubkey
+  relayList: (pubkey: string) => `relay-list:${pubkey}`,
+
   // Wave progress per level
   waveProgress: (pubkey: string, level: string) => `wave-progress:${pubkey}:${level}`,
 };
