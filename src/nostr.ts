@@ -1,4 +1,4 @@
-import { SimplePool, nip19, Event } from 'nostr-tools';
+import { SimplePool, nip19, Event, Filter } from 'nostr-tools';
 import { cache, CacheKeys } from './services/cache';
 
 export interface NostrMetadata {
@@ -63,6 +63,65 @@ async function runConcurrent<T, R>(
     results.push(...batchResults);
   }
   return results;
+}
+
+// Filter shape used in smartQuery (subset of nostr-tools Filter)
+type NostrFilter = {
+  kinds?: number[];
+  authors?: string[];
+  limit?: number;
+  since?: number;
+  until?: number;
+};
+
+/**
+ * Drop-in replacement for pool.querySync that:
+ * - streams events via subscribeMany (no EOSE wait on individual relays)
+ * - resolves when all relays EOSE or timeoutMs elapses
+ * - marks relays that close with an error in deadRelays (mutates the set)
+ * - skips any relay already in deadRelays
+ */
+export async function smartQuery(
+  pool: SimplePool,
+  relays: string[],
+  filter: NostrFilter,
+  opts: { timeoutMs?: number; deadRelays?: Set<string> } = {},
+): Promise<Event[]> {
+  const { timeoutMs = 15000, deadRelays } = opts;
+  const activeRelays = deadRelays
+    ? relays.filter(r => !deadRelays.has(r))
+    : [...relays];
+
+  if (activeRelays.length === 0) return [];
+
+  return new Promise<Event[]>(resolve => {
+    const events: Event[] = [];
+    let done = false;
+    let closer: { close: () => void } | undefined;
+
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      closer?.close();
+      resolve(events);
+    };
+
+    const timer = setTimeout(finish, timeoutMs);
+
+    closer = pool.subscribeMany(activeRelays, filter as Filter, {
+      onevent: (e: Event) => { events.push(e); },
+      oneose: finish,
+      onclose: (reasons: string[]) => {
+        // reasons[i] corresponds to activeRelays[i] (deduplicated, same order)
+        reasons.forEach((reason, i) => {
+          if (reason && reason !== 'closed by us' && activeRelays[i]) {
+            deadRelays?.add(activeRelays[i]);
+          }
+        });
+      },
+    });
+  });
 }
 
 // NIP-07 window.nostr interface
@@ -135,6 +194,7 @@ export class NostrService {
   // NIP-65 relay lists per pubkey (write relays where they publish)
   private relayLists = new Map<string, RelayList>();
   private outboxRelayCache = new Map<string, string[]>();
+  private deadRelays = new Set<string>();
 
   constructor() {
     this.pool = new SimplePool();
@@ -332,34 +392,20 @@ export class NostrService {
     timeoutMs = 15000,
     context = 'query',
   ): Promise<Event[]> {
-    if (pubkeys.length === 0) {
-      return [];
-    }
+    if (pubkeys.length === 0) return [];
 
-    const filter: {
-      kinds?: number[];
-      authors: string[];
-      limit: number;
-      since?: number;
-    } = {
+    const filter: NostrFilter = {
       authors: pubkeys,
       limit: Math.max(1, pubkeys.length * perAuthorLimit),
     };
-    if (kinds && kinds.length > 0) {
-      filter.kinds = kinds;
-    }
-    if (since !== undefined) {
-      filter.since = since;
-    }
+    if (kinds && kinds.length > 0) filter.kinds = kinds;
+    if (since !== undefined) filter.since = since;
 
     try {
-      const events = await Promise.race([
-        this.pool.querySync(relays, filter),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`Timeout in ${context}`)), timeoutMs),
-        ),
-      ]);
-      return events as Event[];
+      return await smartQuery(this.pool, relays, filter, {
+        timeoutMs,
+        deadRelays: this.deadRelays,
+      });
     } catch (error) {
       console.warn(`⚠️ ${context} failed:`, error);
       return [];
