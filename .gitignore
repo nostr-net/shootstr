@@ -6,3 +6,5 @@ dist/
 .env.local
 .backups/
 .claude/
+
+.planning/debug/
